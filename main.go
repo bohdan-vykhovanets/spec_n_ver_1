@@ -2,10 +2,18 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
 )
+
+type Storage interface {
+	Set(key, value string) error
+	Get(key string) (string, error)
+	Delete(key string)
+	GetAll() (map[string]string, error)
+}
 
 type KVStore struct {
 	mu    sync.RWMutex
@@ -13,22 +21,24 @@ type KVStore struct {
 }
 
 func NewKVStore() *KVStore {
-	return &KVStore{
-		store: make(map[string]string),
-	}
+	return &KVStore{store: make(map[string]string)}
 }
 
-func (kv *KVStore) Set(key, value string) {
+func (kv *KVStore) Set(key, value string) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.store[key] = value
+	return nil
 }
 
-func (kv *KVStore) Get(key string) (string, bool) {
+func (kv *KVStore) Get(key string) (string, error) {
 	kv.mu.RLock()
 	defer kv.mu.RUnlock()
 	val, ok := kv.store[key]
-	return val, ok
+	if !ok {
+		return "", errors.New("item not found")
+	}
+	return val, nil
 }
 
 func (kv *KVStore) Delete(key string) {
@@ -40,14 +50,14 @@ func (kv *KVStore) Delete(key string) {
 	delete(kv.store, key)
 }
 
-func (kv *KVStore) GetAll() map[string]string {
+func (kv *KVStore) GetAll() (map[string]string, error) {
 	kv.mu.RLock()
 	defer kv.mu.RUnlock()
 	copyMap := make(map[string]string)
 	for k, v := range kv.store {
 		copyMap[k] = v
 	}
-	return copyMap
+	return copyMap, nil
 }
 
 type Item struct {
@@ -55,29 +65,38 @@ type Item struct {
 	Value string `json:"value"`
 }
 
-var store = NewKVStore()
+type Server struct {
+	store Storage
+}
 
-func Set(w http.ResponseWriter, r *http.Request) {
+func NewServer(s Storage) *Server {
+	return &Server{store: s}
+}
+
+func (s *Server) handleSet(w http.ResponseWriter, r *http.Request) {
 	var item Item
 	if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
 		http.Error(w, "Invalid request payload", http.StatusBadRequest)
 		return
 	}
-	store.Set(item.Key, item.Value)
+	if err := s.store.Set(item.Key, item.Value); err != nil {
+		http.Error(w, "Failed to save", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusCreated)
 }
 
-func Get(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
-	val, ok := store.Get(key)
-	if !ok {
-		http.Error(w, "Item not found", http.StatusNotFound)
+	val, err := s.store.Get(key)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{"value": val})
 }
 
-func Delete(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 
 	defer func() {
@@ -86,19 +105,40 @@ func Delete(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	store.Delete(key)
+	s.store.Delete(key)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func setupRouter() *http.ServeMux {
+func (s *Server) handlePop(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	val, err := s.store.Get(key)
+	if err != nil {
+		http.Error(w, "Item not found", http.StatusNotFound)
+		return
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			http.Error(w, fmt.Sprintf("%v", rec), http.StatusInternalServerError)
+		}
+	}()
+
+	s.store.Delete(key)
+	json.NewEncoder(w).Encode(map[string]string{"value": val})
+}
+
+func setupRouter(s Storage) *http.ServeMux {
+	server := NewServer(s)
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /item", Set)
-	mux.HandleFunc("GET /item/{key}", Get)
-	mux.HandleFunc("DELETE /item/{key}", Delete)
+	mux.HandleFunc("POST /item", server.handleSet)
+	mux.HandleFunc("GET /item/{key}", server.handleGet)
+	mux.HandleFunc("DELETE /item/{key}", server.handleDelete)
+	mux.HandleFunc("POST /item/pop/{key}", server.handlePop)
 	return mux
 }
 
 func main() {
+	store := NewKVStore()
 	fmt.Println("Starting server on :8080")
-	http.ListenAndServe(":8080", setupRouter())
+	http.ListenAndServe(":8080", setupRouter(store))
 }

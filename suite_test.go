@@ -9,12 +9,13 @@ import (
 
 type KVTestSuite struct {
 	suite.Suite
+	store  *KVStore
 	router *http.ServeMux
 }
 
 func (suite *KVTestSuite) SetupTest() {
-	store = NewKVStore()
-	suite.router = setupRouter()
+	suite.store = NewKVStore()
+	suite.router = setupRouter(suite.store)
 }
 
 func TestKVTestSuite(t *testing.T) {

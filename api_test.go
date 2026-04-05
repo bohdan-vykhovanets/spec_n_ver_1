@@ -9,13 +9,13 @@ import (
 
 func (suite *KVTestSuite) TestDeleteNonExistentKeyPanics() {
 	suite.Panics(func() {
-		store.Delete("missing-key")
+		suite.store.Delete("missing-key")
 	}, "Deleting a non-existent key should panic")
 }
 
 func (suite *KVTestSuite) TestGetItemParameterized() {
-	store.Set("key1", "value1")
-	store.Set("key2", "value2")
+	_ = suite.store.Set("key1", "value1")
+	_ = suite.store.Set("key2", "value2")
 
 	cases := []struct {
 		name           string
@@ -25,7 +25,7 @@ func (suite *KVTestSuite) TestGetItemParameterized() {
 	}{
 		{"Valid Key 1", "key1", http.StatusOK, `{"value":"value1"}`},
 		{"Valid Key 2", "key2", http.StatusOK, `{"value":"value2"}`},
-		{"Missing Key", "key3", http.StatusNotFound, "Item not found\n"},
+		{"Missing Key", "key3", http.StatusNotFound, "item not found\n"},
 	}
 
 	for _, tc := range cases {
@@ -56,10 +56,13 @@ func (suite *KVTestSuite) TestCreateAndGetAllItems() {
 	suite.Equal(http.StatusCreated, rr.Code)
 
 	suite.NotNil(rr.Body)
+	suite.True(rr.Code >= 200 && rr.Code < 300)
 
-	store.Set("user2", "Bob")
+	_ = suite.store.Set("user2", "Bob")
 
-	allData := store.GetAll()
+	allData, err := suite.store.GetAll()
+	suite.NoError(err, "Getting all items should not result in an error")
+
 	expectedSubset := map[string]string{
 		"user1": "Alice",
 		"user2": "Bob",
@@ -71,7 +74,7 @@ func (suite *KVTestSuite) TestCreateAndGetAllItems() {
 }
 
 func (suite *KVTestSuite) TestDeleteThroughHTTP() {
-	store.Set("temp", "data")
+	_ = suite.store.Set("temp", "data")
 
 	req, _ := http.NewRequest("DELETE", "/item/temp", nil)
 	rr := httptest.NewRecorder()
